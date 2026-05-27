@@ -717,12 +717,12 @@ def estimate_size(msgs):
 
 def agent_loop(messages: list, max_iterations: int = 20):
     while True:
-        # messages[:] = tool_result_budget(messages)
+        messages[:] = tool_result_budget(messages)
         messages[:] = snip_compact(messages)
-        # messages[:] = micro_compact(messages)
-        # if estimate_size(messages) > CONTEXT_LIMIT:
-        #     print(f"[context size: {estimate_size(messages)} chars] compacting...")
-        #     messages[:] = compact_history(messages)
+        messages[:] = micro_compact(messages)
+        if estimate_size(messages) > CONTEXT_LIMIT:
+            print(f"[context size: {estimate_size(messages)} chars] compacting...")
+            messages[:] = compact_history(messages)
 
         response = client.chat.completions.create(
             model=MODEL,
