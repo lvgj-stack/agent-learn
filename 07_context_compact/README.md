@@ -1,73 +1,94 @@
-# 02_agent_permission
+# 07_context_compact
 
-在 [../01_agent_loop/](../01_agent_loop/) 的基础上加入**权限系统**,演示一个生产级 Agent 在执行工具前应该做哪些校验。
+这个示例演示了 **上下文压缩（Context Compaction）** 的基本思路，用于解决 Agent 在长对话或长任务中上下文越来越大的问题。
 
-## 三层权限模型
+## 为什么需要上下文压缩
 
-模型每次发起 tool call,都会先经过 `check_permission()`,流程:
+随着对话轮次增加，Agent 会不断积累：
 
-```
-tool_call
-   │
-   ├── 1. Deny list   ── 命中 → 直接拒绝(无需询问)
-   │
-   ├── 2. Rule check  ── 命中 → 询问用户(y/N)
-   │
-   └── 3. 通过         ── 执行工具
-```
+- 用户消息
+- 模型回复
+- 工具调用记录
+- 中间推理结果
+- 历史任务状态
 
-### 1. Deny list — 硬性禁止
+如果不做处理，可能会出现：
 
-`DENY_LIST` 中的危险模式(`rm -rf /`、`sudo`、`reboot`、`shutdown`)一旦命中,**直接拒绝**,不询问用户。
+- 上下文过长，超过模型窗口
+- 关键内容被淹没在大量历史信息里
+- 推理质量下降
+- 运行成本升高
 
-### 2. Rule check — 询问用户
+上下文压缩的目的，就是保留“有用信息”，丢弃或摘要“低价值信息”。
 
-`PERMISSION_RULES` 描述「敏感但不至于禁止」的操作,例如 `bash` 命令含 `rm`、写入 `/etc/`、`chmod 777`。命中后会在终端打印警告并等待用户输入 `y/N`。
+## 这个示例做了什么
 
-```python
-PERMISSION_RULES = [
-    {
-        "tools": ["bash"],
-        "check": lambda args: any(
-            kw in args.get("command", "") for kw in ["rm", "> /etc/", "chmod 777"]
-        ),
-        "message": "bash command violates permission rule",
-    }
-]
-```
+一般会包含以下步骤：
 
-### 3. 路径沙箱
+1. 统计当前上下文长度
+2. 判断是否接近阈值
+3. 对历史内容进行压缩或摘要
+4. 保留任务关键状态
+5. 让 Agent 继续在更短上下文中运行
 
-`safe_path()` 把所有路径解析到 `WORKDIR` 下,防止 `../../etc/passwd` 之类的越权访问。
+## 工作方式
 
-> 注:当前 `read_file` / `write_file` 还**没用上** `safe_path`,这是已知 TODO。
-
-## 被拒绝时如何反馈给模型
-
-权限不通过时,不是简单地中断 loop,而是往 `messages` 里塞一条 `role="tool"` 的错误回执:
-
-```python
-{"role": "tool", "tool_call_id": ..., "content": "Error: permission denied for ..."}
+```text
+对话不断增长
+   ↓
+检测到上下文过长
+   ↓
+触发压缩逻辑
+   ↓
+生成摘要 / 保留关键信息
+   ↓
+替换旧上下文
+   ↓
+继续对话
 ```
 
-这样模型能"看到"拒绝原因,从而调整下一步策略,而不是反复重试同一个命令。
+## 你可以重点理解的点
 
-## 运行
+### 1. 什么该保留
+
+通常需要保留：
+
+- 当前任务目标
+- 重要结论
+- 已执行的关键操作
+- 尚未完成的步骤
+
+### 2. 什么可以压缩
+
+通常可以压缩：
+
+- 重复性对话
+- 已确认无关的细节
+- 过长的工具输出
+- 旧的中间探索过程
+
+### 3. 压缩的副作用
+
+压缩不是“完全删除”，而是“有损摘要”。
+
+因此需要注意：
+
+- 不要丢掉关键状态
+- 不要压缩掉未完成任务的信息
+- 尽量保持摘要可追踪
+
+## 运行方式
 
 ```bash
-uv run 02_agent_permission/main.py
+uv run 07_context_compact/main.py
 ```
 
-`.env` 同 [../01_agent_loop/](../01_agent_loop/)。
+## 可扩展方向
 
-试一下下面这种会触发权限询问的指令:
+- 按角色分层压缩上下文
+- 对工具输出单独摘要
+- 保留可回放的审计日志
+- 自动识别“必须保留”的消息
+- 与 todo / hook / subagent 联动
 
-```
-User: 帮我删掉当前目录下所有 .log 文件
-```
-
-## TODO
-
-- `read_file` / `write_file` 接入 `safe_path` 真正做沙箱
-- 把权限规则做成可插拔(读 YAML / JSON)
-- 支持"记住这次选择"(类似 Claude Code 的 always-allow)
+如果你的 Agent 需要长期运行，这个示例会非常实用。

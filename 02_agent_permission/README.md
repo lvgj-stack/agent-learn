@@ -1,73 +1,79 @@
 # 02_agent_permission
 
-在 [../01_agent_loop/](../01_agent_loop/) 的基础上加入**权限系统**,演示一个生产级 Agent 在执行工具前应该做哪些校验。
+这个示例在基础 Agent 循环上增加了 **权限控制** 能力，用来演示：
 
-## 三层权限模型
+- 如何在工具执行前做安全检查
+- 如何拦截高风险命令
+- 如何在必要时向用户申请确认
 
-模型每次发起 tool call,都会先经过 `check_permission()`,流程:
+它适合用来理解“Agent 不只是会调用工具，还需要可控”这个概念。
 
-```
-tool_call
-   │
-   ├── 1. Deny list   ── 命中 → 直接拒绝(无需询问)
-   │
-   ├── 2. Rule check  ── 命中 → 询问用户(y/N)
-   │
-   └── 3. 通过         ── 执行工具
-```
+## 这个示例做了什么
 
-### 1. Deny list — 硬性禁止
+相较于 `01_agent_loop`，这里新增了权限相关逻辑：
 
-`DENY_LIST` 中的危险模式(`rm -rf /`、`sudo`、`reboot`、`shutdown`)一旦命中,**直接拒绝**,不询问用户。
+- `DENY_LIST`：黑名单规则，直接拒绝高风险命令
+- `PERMISSION_RULES`：命中规则后请求用户确认
+- `permission_hook(...)`：统一权限入口
 
-### 2. Rule check — 询问用户
+## 权限判断流程
 
-`PERMISSION_RULES` 描述「敏感但不至于禁止」的操作,例如 `bash` 命令含 `rm`、写入 `/etc/`、`chmod 777`。命中后会在终端打印警告并等待用户输入 `y/N`。
-
-```python
-PERMISSION_RULES = [
-    {
-        "tools": ["bash"],
-        "check": lambda args: any(
-            kw in args.get("command", "") for kw in ["rm", "> /etc/", "chmod 777"]
-        ),
-        "message": "bash command violates permission rule",
-    }
-]
+```text
+模型请求工具
+   ↓
+PreToolUse
+   ↓
+检查黑名单
+   ↓
+检查权限规则
+   ↓
+必要时询问用户
+   ↓
+允许执行 / 拒绝执行
 ```
 
-### 3. 路径沙箱
+## 示例中的安全策略
 
-`safe_path()` 把所有路径解析到 `WORKDIR` 下,防止 `../../etc/passwd` 之类的越权访问。
+### 1. 黑名单拒绝
 
-> 注:当前 `read_file` / `write_file` 还**没用上** `safe_path`,这是已知 TODO。
+以下命令模式会直接拦截：
 
-## 被拒绝时如何反馈给模型
+- `rm -rf /`
+- `sudo`
+- `reboot`
+- `shutdown`
 
-权限不通过时,不是简单地中断 loop,而是往 `messages` 里塞一条 `role="tool"` 的错误回执:
+### 2. 交互式确认
 
-```python
-{"role": "tool", "tool_call_id": ..., "content": "Error: permission denied for ..."}
+对于一些可疑但未必绝对危险的操作，会提示用户：
+
+```text
+⚠  bash command violates permission rule
+   Tool: bash({...})
+   Allow? [y/N]
 ```
 
-这样模型能"看到"拒绝原因,从而调整下一步策略,而不是反复重试同一个命令。
+用户确认后才会继续执行。
 
-## 运行
+## 运行方式
 
 ```bash
 uv run 02_agent_permission/main.py
 ```
 
-`.env` 同 [../01_agent_loop/](../01_agent_loop/)。
+## 适合重点观察的地方
 
-试一下下面这种会触发权限询问的指令:
+- 哪些命令会被直接拒绝
+- 哪些命令会要求确认
+- 权限逻辑和工具执行逻辑如何解耦
 
-```
-User: 帮我删掉当前目录下所有 .log 文件
-```
+## 代码中的关键函数
 
-## TODO
+- `check_deny_list(...)`
+- `check_rules(...)`
+- `ask_user(...)`
+- `permission_hook(...)`
 
-- `read_file` / `write_file` 接入 `safe_path` 真正做沙箱
-- 把权限规则做成可插拔(读 YAML / JSON)
-- 支持"记住这次选择"(类似 Claude Code 的 always-allow)
+## 注意事项
+
+这个示例仍然包含 `bash` 工具，因此即使加了权限控制，也建议在测试环境中运行，避免误操作生产环境文件。

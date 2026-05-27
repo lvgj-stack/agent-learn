@@ -1,5 +1,6 @@
 import json
 import os
+import readline  # noqa: F401 — enables proper CJK backspace in input()
 
 import truststore
 import time
@@ -599,24 +600,40 @@ def load_skill(name: str) -> str:
 SYSTEM = build_system()
 
 
-def snip_compact(messages: list, max_messages: int = 20):
-    """Snip messages to fit within max_messages."""
+def snip_compact(messages: list, max_messages: int = 50):
+    """Keep head + tail, snip middle tool-call exchanges as atomic units."""
     if len(messages) <= max_messages:
         return messages
-    head_keep, keep_tail = 3, max_messages - 3
 
-    snipped = 0
-    new_messages = messages[:head_keep]
-    for msg in messages[head_keep:keep_tail]:
-        if msg["role"] != "tool":
-            new_messages.append(msg)
-            continue
-        snipped += 1
+    head_keep = 3
+    keep_tail = max_messages - head_keep - 1  # -1 for the placeholder
+
+    # Head must not end with an assistant that has pending tool_calls
+    while head_keep > 2 and messages[head_keep - 1].get("tool_calls"):
+        head_keep -= 1
+
+    tail_start = len(messages) - keep_tail
+    if tail_start <= head_keep:
+        return messages
+
+    # Tail must not start on an orphaned tool response
+    while tail_start < len(messages) and messages[tail_start]["role"] == "tool":
+        tail_start -= 1
+
+    if tail_start <= head_keep:
+        return messages
+
+    middle = messages[head_keep:tail_start]
+    snipped = len(middle)
+
+    if snipped <= 0:
+        return messages
+
     placeholder = {
         "role": "user",
-        "content": f"Snipped {snipped} messages",
+        "content": f"[Earlier context snipped — {snipped} messages removed]",
     }
-    return new_messages + [placeholder] + messages[-keep_tail:]
+    return messages[:head_keep] + [placeholder] + messages[tail_start:]
 
 
 KEEP_RECENT_TOOL_RESULTS = 3
@@ -688,7 +705,7 @@ def summarize_history(messages):
         + conversation
     )
     response = client.chat.completions.create(
-        model=MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=2000
+        model=MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=8000
     )
     return (
         "\n".join(
@@ -708,7 +725,7 @@ def compact_history(messages: list):
     return [{"role": "user", "content": f"[Compacted]\n\n{summary}"}]
 
 
-CONTEXT_LIMIT = 50000
+CONTEXT_LIMIT = 1 * 1024 * 1024 * 0.8
 
 
 def estimate_size(msgs):
@@ -728,7 +745,7 @@ def agent_loop(messages: list, max_iterations: int = 20):
             model=MODEL,
             messages=messages,
             tools=TOOLS,
-            max_tokens=1024,
+            max_tokens=8000,
         )
 
         msg = response.choices[0].message

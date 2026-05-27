@@ -1,73 +1,89 @@
-# 02_agent_permission
+# 03_agent_hook
 
-在 [../01_agent_loop/](../01_agent_loop/) 的基础上加入**权限系统**,演示一个生产级 Agent 在执行工具前应该做哪些校验。
+在 [../01_agent_loop/](../01_agent_loop/) 的基础上加入 **Hook（钩子）机制**，演示如何在 Agent 执行前后插入自定义逻辑，用来做审计、告警、统计、自动修正等能力。
 
-## 三层权限模型
+## 这个示例解决什么问题
 
-模型每次发起 tool call,都会先经过 `check_permission()`,流程:
+单纯的 Agent 循环通常只负责：
 
-```
-tool_call
-   │
-   ├── 1. Deny list   ── 命中 → 直接拒绝(无需询问)
-   │
-   ├── 2. Rule check  ── 命中 → 询问用户(y/N)
-   │
-   └── 3. 通过         ── 执行工具
-```
+1. 接收用户输入
+2. 调用模型
+3. 执行工具
+4. 把结果回传给模型
 
-### 1. Deny list — 硬性禁止
+但在真实项目里，你往往还需要：
 
-`DENY_LIST` 中的危险模式(`rm -rf /`、`sudo`、`reboot`、`shutdown`)一旦命中,**直接拒绝**,不询问用户。
+- 记录每一次工具调用
+- 在危险操作前做二次确认
+- 在工具执行后做结果检查
+- 在出错时自动告警或降级
 
-### 2. Rule check — 询问用户
+Hook 就是把这些横切逻辑从主流程中拆出来，让系统更清晰、更容易维护。
 
-`PERMISSION_RULES` 描述「敏感但不至于禁止」的操作,例如 `bash` 命令含 `rm`、写入 `/etc/`、`chmod 777`。命中后会在终端打印警告并等待用户输入 `y/N`。
+## Hook 的基本思路
 
-```python
-PERMISSION_RULES = [
-    {
-        "tools": ["bash"],
-        "check": lambda args: any(
-            kw in args.get("command", "") for kw in ["rm", "> /etc/", "chmod 777"]
-        ),
-        "message": "bash command violates permission rule",
-    }
-]
-```
+本项目通常会在关键节点触发 hook，例如：
 
-### 3. 路径沙箱
+- `before_tool_call`：工具执行前
+- `after_tool_call`：工具执行后
+- `on_error`：异常发生时
+- `on_message`：收到模型消息时
 
-`safe_path()` 把所有路径解析到 `WORKDIR` 下,防止 `../../etc/passwd` 之类的越权访问。
+流程可以理解为：
 
-> 注:当前 `read_file` / `write_file` 还**没用上** `safe_path`,这是已知 TODO。
-
-## 被拒绝时如何反馈给模型
-
-权限不通过时,不是简单地中断 loop,而是往 `messages` 里塞一条 `role="tool"` 的错误回执:
-
-```python
-{"role": "tool", "tool_call_id": ..., "content": "Error: permission denied for ..."}
+```text
+用户输入
+   ↓
+模型推理
+   ↓
+触发 before hook
+   ↓
+执行工具
+   ↓
+触发 after hook
+   ↓
+把结果返回给模型
 ```
 
-这样模型能"看到"拒绝原因,从而调整下一步策略,而不是反复重试同一个命令。
+## 为什么要用 Hook
+
+### 1. 解耦业务逻辑
+
+工具执行逻辑只负责“做事”，而审计、日志、告警放到 hook 中处理。
+
+### 2. 便于扩展
+
+后续如果要加：
+
+- 埋点统计
+- 黑名单检测
+- 敏感词过滤
+- 调试日志
+
+都可以直接新增 hook，而不需要大改 Agent 主流程。
+
+### 3. 更适合生产环境
+
+真实场景中，Agent 往往不是“能跑就行”，而是要“可控、可追踪、可回放”。Hook 机制正好满足这些需求。
 
 ## 运行
 
 ```bash
-uv run 02_agent_permission/main.py
+uv run 03_agent_hook/main.py
 ```
 
-`.env` 同 [../01_agent_loop/](../01_agent_loop/)。
+`.env` 配置方式同 [../01_agent_loop/](../01_agent_loop/)。
 
-试一下下面这种会触发权限询问的指令:
+## 你可以重点观察的内容
 
-```
-User: 帮我删掉当前目录下所有 .log 文件
-```
+- hook 在什么时机被触发
+- 工具执行前后，数据是如何流转的
+- 如何通过 hook 给 Agent 增加额外能力，而不污染主逻辑
 
-## TODO
+## 后续可扩展方向
 
-- `read_file` / `write_file` 接入 `safe_path` 真正做沙箱
-- 把权限规则做成可插拔(读 YAML / JSON)
-- 支持"记住这次选择"(类似 Claude Code 的 always-allow)
+- 增加统一日志系统
+- 支持多个 hook 串联执行
+- 支持异步 hook
+- 为每个 hook 增加开关和配置项
+- 记录完整 trace，方便调试 Agent 行为

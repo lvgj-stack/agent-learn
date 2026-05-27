@@ -1,73 +1,65 @@
-# 02_agent_permission
+# 06_skills
 
-在 [../01_agent_loop/](../01_agent_loop/) 的基础上加入**权限系统**,演示一个生产级 Agent 在执行工具前应该做哪些校验。
+这个示例演示了 **Skills（技能）系统**：把一类稳定、可复用的能力封装起来，让 Agent 按需加载并使用。
 
-## 三层权限模型
+## 什么是 Skill
 
-模型每次发起 tool call,都会先经过 `check_permission()`,流程:
+你可以把 Skill 理解为：
 
-```
-tool_call
-   │
-   ├── 1. Deny list   ── 命中 → 直接拒绝(无需询问)
-   │
-   ├── 2. Rule check  ── 命中 → 询问用户(y/N)
-   │
-   └── 3. 通过         ── 执行工具
-```
+- 一份可复用的任务模板
+- 一组专门的操作说明
+- 一段与特定场景对应的能力包
 
-### 1. Deny list — 硬性禁止
+例如：
 
-`DENY_LIST` 中的危险模式(`rm -rf /`、`sudo`、`reboot`、`shutdown`)一旦命中,**直接拒绝**,不询问用户。
+- 写代码
+- 生成文档
+- 处理 PDF
+- 做数据分析
+- 完成某类固定工作流
 
-### 2. Rule check — 询问用户
+## 为什么要有 Skills
 
-`PERMISSION_RULES` 描述「敏感但不至于禁止」的操作,例如 `bash` 命令含 `rm`、写入 `/etc/`、`chmod 777`。命中后会在终端打印警告并等待用户输入 `y/N`。
+如果没有 Skills，Agent 每次遇到类似任务都要重新“临场发挥”。
 
-```python
-PERMISSION_RULES = [
-    {
-        "tools": ["bash"],
-        "check": lambda args: any(
-            kw in args.get("command", "") for kw in ["rm", "> /etc/", "chmod 777"]
-        ),
-        "message": "bash command violates permission rule",
-    }
-]
-```
+有了 Skills 之后，可以：
 
-### 3. 路径沙箱
+- 降低重复提示词编写成本
+- 让能力模块化
+- 让特定任务有稳定的执行方式
+- 提高输出一致性
 
-`safe_path()` 把所有路径解析到 `WORKDIR` 下,防止 `../../etc/passwd` 之类的越权访问。
+## 工作流程
 
-> 注:当前 `read_file` / `write_file` 还**没用上** `safe_path`,这是已知 TODO。
-
-## 被拒绝时如何反馈给模型
-
-权限不通过时,不是简单地中断 loop,而是往 `messages` 里塞一条 `role="tool"` 的错误回执:
-
-```python
-{"role": "tool", "tool_call_id": ..., "content": "Error: permission denied for ..."}
+```text
+用户提出任务
+   ↓
+Agent 判断是否需要某个 skill
+   ↓
+加载 skill 内容
+   ↓
+按照 skill 约定执行任务
+   ↓
+输出结果
 ```
 
-这样模型能"看到"拒绝原因,从而调整下一步策略,而不是反复重试同一个命令。
-
-## 运行
+## 运行方式
 
 ```bash
-uv run 02_agent_permission/main.py
+uv run 06_skills/main.py
 ```
 
-`.env` 同 [../01_agent_loop/](../01_agent_loop/)。
+## 你可以关注的内容
 
-试一下下面这种会触发权限询问的指令:
+- skill 是如何被发现和加载的
+- skill 内容如何影响模型行为
+- 如何把通用 Agent 变成“领域 Agent”
 
-```
-User: 帮我删掉当前目录下所有 .log 文件
-```
+## 典型扩展方向
 
-## TODO
+- 为不同场景建立 skill 目录
+- 给 skill 增加版本管理
+- 支持自动选择最匹配的 skill
+- 将 skill 与 subagent 组合使用
 
-- `read_file` / `write_file` 接入 `safe_path` 真正做沙箱
-- 把权限规则做成可插拔(读 YAML / JSON)
-- 支持"记住这次选择"(类似 Claude Code 的 always-allow)
+如果你的项目经常重复处理相似任务，Skills 会非常有价值。

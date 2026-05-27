@@ -1,73 +1,75 @@
-# 02_agent_permission
+# 05_subagent
 
-在 [../01_agent_loop/](../01_agent_loop/) 的基础上加入**权限系统**,演示一个生产级 Agent 在执行工具前应该做哪些校验。
+这个示例演示了 **子代理（Subagent）** 的使用方式，也就是让主 Agent 把某些任务分发给独立的执行单元去处理。
 
-## 三层权限模型
+## 为什么需要子代理
 
-模型每次发起 tool call,都会先经过 `check_permission()`,流程:
+当任务变复杂时，主 Agent 继续自己做所有事情会带来几个问题：
 
-```
-tool_call
-   │
-   ├── 1. Deny list   ── 命中 → 直接拒绝(无需询问)
-   │
-   ├── 2. Rule check  ── 命中 → 询问用户(y/N)
-   │
-   └── 3. 通过         ── 执行工具
-```
+- 上下文越来越长
+- 任务之间容易互相干扰
+- 不同类型的工作难以分工
 
-### 1. Deny list — 硬性禁止
+子代理的思路就是：
 
-`DENY_LIST` 中的危险模式(`rm -rf /`、`sudo`、`reboot`、`shutdown`)一旦命中,**直接拒绝**,不询问用户。
+- 主 Agent 负责理解目标、拆分任务、汇总结果
+- 子代理负责完成某个局部任务
 
-### 2. Rule check — 询问用户
+## 典型适用场景
 
-`PERMISSION_RULES` 描述「敏感但不至于禁止」的操作,例如 `bash` 命令含 `rm`、写入 `/etc/`、`chmod 777`。命中后会在终端打印警告并等待用户输入 `y/N`。
+- 代码搜索
+- 文件分析
+- 单模块修改
+- 独立验证
+- 多轮探索型任务
 
-```python
-PERMISSION_RULES = [
-    {
-        "tools": ["bash"],
-        "check": lambda args: any(
-            kw in args.get("command", "") for kw in ["rm", "> /etc/", "chmod 777"]
-        ),
-        "message": "bash command violates permission rule",
-    }
-]
-```
+## 工作方式
 
-### 3. 路径沙箱
-
-`safe_path()` 把所有路径解析到 `WORKDIR` 下,防止 `../../etc/passwd` 之类的越权访问。
-
-> 注:当前 `read_file` / `write_file` 还**没用上** `safe_path`,这是已知 TODO。
-
-## 被拒绝时如何反馈给模型
-
-权限不通过时,不是简单地中断 loop,而是往 `messages` 里塞一条 `role="tool"` 的错误回执:
-
-```python
-{"role": "tool", "tool_call_id": ..., "content": "Error: permission denied for ..."}
+```text
+主 Agent 接到任务
+   ↓
+判断哪些部分适合交给子代理
+   ↓
+创建子代理并传递子任务
+   ↓
+子代理独立执行
+   ↓
+返回结果给主 Agent
+   ↓
+主 Agent 汇总并继续下一步
 ```
 
-这样模型能"看到"拒绝原因,从而调整下一步策略,而不是反复重试同一个命令。
+## 你可以重点理解的点
 
-## 运行
+### 1. 任务切分
+
+主 Agent 不需要一次性解决所有问题，而是把问题拆成更小的块。
+
+### 2. 上下文隔离
+
+子代理拥有自己的执行上下文，这样可以减少主上下文膨胀。
+
+### 3. 结果汇总
+
+主 Agent 在拿到子代理结果后，再决定下一步动作。
+
+## 运行方式
 
 ```bash
-uv run 02_agent_permission/main.py
+uv run 05_subagent/main.py
 ```
 
-`.env` 同 [../01_agent_loop/](../01_agent_loop/)。
+## 关键内容
 
-试一下下面这种会触发权限询问的指令:
+- `spawn_subagent(...)`：启动子代理
+- `task` 工具：让模型显式触发子任务
+- 主循环：负责协调多个执行单元
 
-```
-User: 帮我删掉当前目录下所有 .log 文件
-```
+## 后续方向
 
-## TODO
+- 多个子代理并行执行
+- 子代理之间互相通信
+- 为不同任务类型选择不同子代理模板
+- 给子代理增加权限和资源限制
 
-- `read_file` / `write_file` 接入 `safe_path` 真正做沙箱
-- 把权限规则做成可插拔(读 YAML / JSON)
-- 支持"记住这次选择"(类似 Claude Code 的 always-allow)
+如果你想把 Agent 从“单线程思考”升级成“可分工协作系统”，这个示例是很好的起点。

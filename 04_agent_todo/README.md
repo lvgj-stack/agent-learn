@@ -1,73 +1,67 @@
-# 02_agent_permission
+# 04_agent_todo
 
-在 [../01_agent_loop/](../01_agent_loop/) 的基础上加入**权限系统**,演示一个生产级 Agent 在执行工具前应该做哪些校验。
+这个示例展示了如何让 Agent 维护一份 **任务清单（todo）**，用于跟踪当前工作进度。
 
-## 三层权限模型
+## 目标
 
-模型每次发起 tool call,都会先经过 `check_permission()`,流程:
+当 Agent 在处理较复杂任务时，往往需要把大目标拆成若干子任务。例如：
 
-```
-tool_call
-   │
-   ├── 1. Deny list   ── 命中 → 直接拒绝(无需询问)
-   │
-   ├── 2. Rule check  ── 命中 → 询问用户(y/N)
-   │
-   └── 3. 通过         ── 执行工具
-```
+- 先读取项目结构
+- 再定位问题文件
+- 再修改代码
+- 最后验证结果
 
-### 1. Deny list — 硬性禁止
+`todo_write` 工具就是用来把这些步骤显式记录下来。
 
-`DENY_LIST` 中的危险模式(`rm -rf /`、`sudo`、`reboot`、`shutdown`)一旦命中,**直接拒绝**,不询问用户。
+## 这个示例的价值
 
-### 2. Rule check — 询问用户
+相比只会“聊天”的 Agent，带 todo 的 Agent 更像一个真正的执行者，因为它可以：
 
-`PERMISSION_RULES` 描述「敏感但不至于禁止」的操作,例如 `bash` 命令含 `rm`、写入 `/etc/`、`chmod 777`。命中后会在终端打印警告并等待用户输入 `y/N`。
+- 记录当前计划
+- 标记任务状态
+- 让用户看到执行进度
+- 在长任务中保持上下文清晰
 
-```python
-PERMISSION_RULES = [
-    {
-        "tools": ["bash"],
-        "check": lambda args: any(
-            kw in args.get("command", "") for kw in ["rm", "> /etc/", "chmod 777"]
-        ),
-        "message": "bash command violates permission rule",
-    }
-]
-```
-
-### 3. 路径沙箱
-
-`safe_path()` 把所有路径解析到 `WORKDIR` 下,防止 `../../etc/passwd` 之类的越权访问。
-
-> 注:当前 `read_file` / `write_file` 还**没用上** `safe_path`,这是已知 TODO。
-
-## 被拒绝时如何反馈给模型
-
-权限不通过时,不是简单地中断 loop,而是往 `messages` 里塞一条 `role="tool"` 的错误回执:
-
-```python
-{"role": "tool", "tool_call_id": ..., "content": "Error: permission denied for ..."}
-```
-
-这样模型能"看到"拒绝原因,从而调整下一步策略,而不是反复重试同一个命令。
-
-## 运行
+## 运行方式
 
 ```bash
-uv run 02_agent_permission/main.py
+uv run 04_agent_todo/main.py
 ```
 
-`.env` 同 [../01_agent_loop/](../01_agent_loop/)。
+## 你会看到什么
 
-试一下下面这种会触发权限询问的指令:
+当模型调用 `todo_write` 时，程序会打印类似这样的内容：
 
+```text
+## Current Tasks
+-   读取项目文件
+- > 修改 README
+- ✓ 验证结果
 ```
-User: 帮我删掉当前目录下所有 .log 文件
-```
 
-## TODO
+其中：
 
-- `read_file` / `write_file` 接入 `safe_path` 真正做沙箱
-- 把权限规则做成可插拔(读 YAML / JSON)
-- 支持"记住这次选择"(类似 Claude Code 的 always-allow)
+- 空格表示 `pending`
+- `>` 表示 `in_progress`
+- `✓` 表示 `completed`
+
+## 关键实现
+
+- `CURRENT_TODOS`：当前任务缓存
+- `run_todo_write(...)`：更新并打印任务列表
+- `TOOL_HANDLERS`：将 `todo_write` 接入 Agent 工具系统
+
+## 适合重点观察的地方
+
+- Agent 如何把一个任务拆成多个步骤
+- todo 状态如何变化
+- todo 工具如何帮助人类理解 Agent 的执行路径
+
+## 延伸方向
+
+- 支持自动根据上下文生成 todo
+- 支持任务优先级
+- 支持任务依赖关系
+- 将 todo 持久化到文件或数据库
+
+如果你的 Agent 项目比较复杂，建议尽早加入类似 todo 的任务管理能力。
